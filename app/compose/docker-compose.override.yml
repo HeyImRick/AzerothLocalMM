@@ -1,0 +1,128 @@
+services:
+  ac-database:
+    container_name: azeroth-local-database
+    image: "mysql@sha256:14690274f4967ba207939c97dd79a8d6604f1d532218ea6be69c0001ddd2d45f"
+    ports: !reset []
+    environment:
+      MYSQL_ROOT_PASSWORD: "${DOCKER_DB_ROOT_PASSWORD:?Set DOCKER_DB_ROOT_PASSWORD in .env}"
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  ac-worldserver:
+    container_name: azeroth-local-worldserver
+    image: "azeroth-local/worldserver:82d3bf237d51"
+    build:
+      context: .
+      target: worldserver
+      args:
+        UBUNTU_VERSION: "24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11"
+        BUILD_JOBS: "${BUILD_JOBS:-4}"
+    ports: !override
+      - "127.0.0.1:8085:8085"
+    volumes:
+      - ./modules:/azerothcore/modules
+      - "${AZEROTH_LOCAL_ROOT:?Set AZEROTH_LOCAL_ROOT in .env}/var/dist/bin:/azerothcore/incremental-bin:ro"
+      - ./env/dist/etc:/work/dist/etc:ro
+    command:
+      - bash
+      - -lc
+      - |
+        if [ -x /azerothcore/incremental-bin/worldserver ]; then
+          exec /azerothcore/incremental-bin/worldserver -c /azerothcore/env/dist/etc/worldserver.conf
+        fi
+        exec /azerothcore/env/dist/bin/worldserver
+    environment:
+      AC_STRICT_NAMES_RESERVED: "0"
+      AC_PLAYERBOTS_UPDATES_ENABLE_DATABASES: "1"
+      AC_AI_PLAYERBOT_RANDOM_BOT_AUTOLOGIN: "1"
+      AC_AI_PLAYERBOT_MIN_RANDOM_BOTS: "${MIN_RANDOM_BOTS:-100}"
+      AC_AI_PLAYERBOT_MAX_RANDOM_BOTS: "${MAX_RANDOM_BOTS:-100}"
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  ac-authserver:
+    container_name: azeroth-local-authserver
+    image: "azeroth-local/authserver:82d3bf237d51"
+    build:
+      context: .
+      target: authserver
+      args:
+        UBUNTU_VERSION: "24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11"
+        BUILD_JOBS: "${BUILD_JOBS:-4}"
+    ports: !override
+      - "127.0.0.1:3724:3724"
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  ac-db-import:
+    container_name: azeroth-local-db-import
+    image: "azeroth-local/db-import:82d3bf237d51"
+    build:
+      context: .
+      target: db-import
+      args:
+        UBUNTU_VERSION: "24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11"
+        BUILD_JOBS: "${BUILD_JOBS:-4}"
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  ac-client-data-init:
+    container_name: azeroth-local-client-data-init
+    image: "azeroth-local/client-data:82d3bf237d51"
+    build:
+      context: .
+      target: client-data
+      args:
+        UBUNTU_VERSION: "24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11"
+        BUILD_JOBS: "${BUILD_JOBS:-4}"
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  ac-incremental-builder:
+    profiles: ["incremental"]
+    image: "azeroth-local/incremental-builder:82d3bf237d51"
+    build:
+      context: .
+      dockerfile: apps/docker/Dockerfile.dev-server
+      target: dev
+      args:
+        USER_ID: "1000"
+        GROUP_ID: "1000"
+        DOCKER_USER: acore
+    working_dir: /azerothcore
+    environment:
+      BUILD_JOBS: "${BUILD_JOBS:-4}"
+      CCACHE_DIR: /work/ccache
+      CCACHE_MAXSIZE: 8G
+    volumes:
+      - .:/azerothcore
+      - "${AZEROTH_LOCAL_ROOT:?Set AZEROTH_LOCAL_ROOT in .env}/var/build:/work/build"
+      - "${AZEROTH_LOCAL_ROOT:?Set AZEROTH_LOCAL_ROOT in .env}/var/ccache:/work/ccache"
+      - "${AZEROTH_LOCAL_ROOT:?Set AZEROTH_LOCAL_ROOT in .env}/var/dist:/work/dist"
+    entrypoint: []
+    command: ["true"]

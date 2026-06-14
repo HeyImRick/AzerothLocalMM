@@ -1,0 +1,1174 @@
+diff --git a/conf/playerbots.conf.dist b/conf/playerbots.conf.dist
+index d673cd53..7fa3bb6c 100644
+--- a/conf/playerbots.conf.dist
++++ b/conf/playerbots.conf.dist
+@@ -1023,6 +1023,47 @@ AiPlayerbot.HealerDPSMapRestriction = 1
+ # Default: (Dungeon and Raid maps) "33,34,36,43,47,48,70,90,109,129,209,229,230,329,349,389,429,1001,1004,1007,269,540,542,543,545,546,547,552,553,554,555,556,557,558,560,585,574,575,576,578,595,599,600,601,602,604,608,619,632,650,658,668,409,469,509,531,532,534,544,548,550,564,565,580,249,533,603,615,616,624,631,649,724"
+ AiPlayerbot.RestrictedHealerDPSMaps = "33,34,36,43,47,48,70,90,109,129,209,229,230,329,349,389,429,1001,1004,1007,269,540,542,543,545,546,547,552,553,554,555,556,557,558,560,585,574,575,576,578,595,599,600,601,602,604,608,619,632,650,658,668,409,469,509,531,532,534,544,548,550,564,565,580,249,533,603,615,616,624,631,649,724"
+ 
++####################################################################################################
++# HOST-DRIVEN REGIONAL POPULATION
++#
++# Keeps 20% of online random bots in the host zone, 30% in nearby zones, and leaves 50% under the
++# normal world distribution. The host is the active character from the configured GM account.
++
++AiPlayerbot.RegionalPopulation.Enabled = 1
++AiPlayerbot.RegionalPopulation.PreferredHostAccountId = 0
++AiPlayerbot.RegionalPopulation.HostZonePercent = 20
++AiPlayerbot.RegionalPopulation.NearbyZonesPercent = 30
++AiPlayerbot.RegionalPopulation.RandomWorldPercent = 50
++AiPlayerbot.RegionalPopulation.NearbyZoneCount = 3
++AiPlayerbot.RegionalPopulation.ZoneStableTime = 90
++AiPlayerbot.RegionalPopulation.RegionChangeCooldown = 300
++AiPlayerbot.RegionalPopulation.UpdateInterval = 30
++AiPlayerbot.RegionalPopulation.RebalanceInterval = 30
++AiPlayerbot.RegionalPopulation.MaxTravelStartsPerCycle = 6
++AiPlayerbot.RegionalPopulation.MaxTravelingBots = 12
++AiPlayerbot.RegionalPopulation.BotReassignmentCooldown = 600
++AiPlayerbot.RegionalPopulation.SilentFallbackAfter = 120
++AiPlayerbot.RegionalPopulation.FailedRouteCooldown = 600
++AiPlayerbot.RegionalPopulation.HostLevelRangeBelow = 8
++AiPlayerbot.RegionalPopulation.HostLevelRangeAbove = 8
++AiPlayerbot.RegionalPopulation.ZoneLevelLowerMargin = 1
++AiPlayerbot.RegionalPopulation.ZoneLevelUpperMargin = 3
++AiPlayerbot.RegionalPopulation.MinDistanceFromHost = 250
++AiPlayerbot.RegionalPopulation.MaxDistanceInHostZone = 2000
++AiPlayerbot.RegionalPopulation.MaxWalkingRouteDistance = 6000
++AiPlayerbot.RegionalPopulation.RealPlayerProtectionRadius = 250
++AiPlayerbot.RegionalPopulation.MinDistanceBetweenDestinations = 75
++AiPlayerbot.RegionalPopulation.MaxPerPoint = 3
++AiPlayerbot.RegionalPopulation.MaxPerZone = 20
++AiPlayerbot.RegionalPopulation.MaxPerSubArea = 4
++AiPlayerbot.RegionalPopulation.SameFactionPercent = 80
++AiPlayerbot.RegionalPopulation.OrganicTravel = 1
++AiPlayerbot.RegionalPopulation.AllowSilentFallback = 1
++AiPlayerbot.RegionalPopulation.AllowFlightPaths = 1
++AiPlayerbot.RegionalPopulation.AllowPortals = 1
++AiPlayerbot.RegionalPopulation.AllowBoatsAndZeppelins = 1
++AiPlayerbot.RegionalPopulation.ProtectQuestBots = 0
++
+ #
+ #
+ ####################################################################################################
+diff --git a/src/Bot/RandomPlayerbotMgr.cpp b/src/Bot/RandomPlayerbotMgr.cpp
+index bca11966..aa1e6ddc 100644
+--- a/src/Bot/RandomPlayerbotMgr.cpp
++++ b/src/Bot/RandomPlayerbotMgr.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include <algorithm>
+ #include <boost/thread/thread.hpp>
++#include <cctype>
+ #include <cstdlib>
+ #include <ctime>
+ #include <iomanip>
+@@ -18,6 +19,7 @@
+ #include "Battleground.h"
+ #include "BattlegroundMgr.h"
+ #include "ChannelMgr.h"
++#include "Chat.h"
+ #include "DBCStores.h"
+ #include "DBCStructure.h"
+ #include "DatabaseEnv.h"
+@@ -289,6 +291,8 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
+     if (!sPlayerbotAIConfig.randomBotAutologin || !sPlayerbotAIConfig.enabled)
+         return;
+ 
++    UpdateRegionalPopulation();
++
+     /*if (sPlayerbotAIConfig.enablePrototypePerformanceDiff)
+     {
+         LOG_INFO("playerbots", "---------------------------------------");
+@@ -2509,6 +2513,9 @@ void RandomPlayerbotMgr::HandleCommand(uint32 type, std::string const text, Play
+ 
+ void RandomPlayerbotMgr::OnPlayerLogout(Player* player)
+ {
++    if (IsRegionalHost(player))
++        ClearRegionalPopulation();
++
+     DisablePlayerBot(player->GetGUID());
+ 
+     for (PlayerBotMap::const_iterator it = GetPlayerBotsBegin(); it != GetPlayerBotsEnd(); ++it)
+@@ -2650,7 +2657,579 @@ void RandomPlayerbotMgr::OnPlayerLogin(Player* player)
+     {
+         players.push_back(player);
+         LOG_DEBUG("playerbots", "Including non-random bot player {} into random bot update", player->GetName().c_str());
++
++        uint32 accountId = player->GetSession()->GetAccountId();
++        uint32 preferredAccountId = sPlayerbotAIConfig.regionalPopulationHostAccountId;
++        if (sPlayerbotAIConfig.regionalPopulationEnabled &&
++            (!preferredAccountId || accountId == preferredAccountId) &&
++            player->GetSession()->GetSecurity() >= SEC_GAMEMASTER)
++        {
++            regionalHostGuid = player->GetGUID();
++            regionalPaused = false;
++            regionalForceRebalance = true;
++            regionalLastRebalance = 0;
++            regionalLastRegionChange = 0;
++            OnRegionalHostZoneChanged(player, player->GetZoneId(), player->GetAreaId());
++            LOG_INFO("playerbots", "Regional population host selected: {} (account {})", player->GetName(),
++                     accountId);
++        }
++    }
++}
++
++bool RandomPlayerbotMgr::IsRegionalHost(Player* player) const
++{
++    return player && !regionalHostGuid.IsEmpty() && player->GetGUID() == regionalHostGuid;
++}
++
++bool RandomPlayerbotMgr::IsValidRegionalHostLocation(Player* player) const
++{
++    if (!player || !player->IsInWorld() || player->IsBeingTeleported() || !player->GetMap())
++        return false;
++
++    if (player->GetMap()->Instanceable() || player->InBattleground() || player->InArena())
++        return false;
++
++    // Unzoned coordinates include GM-only islands and invalid terrain.
++    return player->GetZoneId() != 0;
++}
++
++void RandomPlayerbotMgr::OnRegionalHostZoneChanged(Player* player, uint32 newZone, uint32 newArea)
++{
++    if (!sPlayerbotAIConfig.regionalPopulationEnabled || !IsRegionalHost(player) ||
++        !IsValidRegionalHostLocation(player))
++        return;
++
++    uint32 mapId = player->GetMapId();
++    uint32 now = NowSeconds();
++
++    if (!regionalZoneId)
++    {
++        regionalMapId = mapId;
++        regionalZoneId = newZone;
++        regionalAreaId = newArea;
++        regionalPendingMapId = 0;
++        regionalPendingZoneId = 0;
++        regionalPendingAreaId = 0;
++        regionalPendingSince = 0;
++        regionalLastRegionChange = now;
++        regionalForceRebalance = true;
++        RefreshRegionalNearbyZones(player);
++        return;
++    }
++
++    if (mapId == regionalMapId && newZone == regionalZoneId)
++    {
++        regionalAreaId = newArea;
++        return;
++    }
++
++    if (mapId != regionalPendingMapId || newZone != regionalPendingZoneId)
++    {
++        regionalPendingMapId = mapId;
++        regionalPendingZoneId = newZone;
++        regionalPendingAreaId = newArea;
++        regionalPendingSince = now;
++        LOG_DEBUG("playerbots", "Regional population pending region: map {} zone {}", mapId, newZone);
++    }
++}
++
++void RandomPlayerbotMgr::ClearRegionalPopulation()
++{
++    for (auto const& [botId, assignment] : regionalAssignments)
++    {
++        (void)assignment;
++        if (Player* bot = GetPlayerBot(ObjectGuid::Create<HighGuid::Player>(botId)))
++            if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot))
++                ai->rpgInfo.ChangeToIdle();
++    }
++
++    regionalAssignments.clear();
++    regionalNearbyZones.clear();
++    regionalHostGuid.Clear();
++    regionalMapId = 0;
++    regionalZoneId = 0;
++    regionalAreaId = 0;
++    regionalPendingMapId = 0;
++    regionalPendingZoneId = 0;
++    regionalPendingAreaId = 0;
++    regionalPendingSince = 0;
++    regionalLastRegionChange = 0;
++    regionalLastUpdate = 0;
++    regionalLastRebalance = 0;
++    regionalForceRebalance = false;
++    LOG_INFO("playerbots", "Regional population stopped; random bot behavior restored.");
++}
++
++bool RandomPlayerbotMgr::IsRegionalBotEligible(Player* bot)
++{
++    if (!bot || !bot->IsInWorld() || bot->IsBeingTeleported() || bot->IsInCombat() || bot->isDead() ||
++        bot->GetGroup() || bot->InBattleground() || bot->InArena() || bot->InBattlegroundQueue() ||
++        bot->HasUnitState(UNIT_STATE_IN_FLIGHT) || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) ||
++        !bot->GetMap() || bot->GetMap()->Instanceable())
++        return false;
++
++    if (!IsRandomBot(bot) || bot->GetSession()->GetSecurity() > SEC_PLAYER)
++        return false;
++
++    PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
++    if (!ai || ai->HasPlayerNearby(sPlayerbotAIConfig.regionalPopulationRealPlayerProtectionRadius))
++        return false;
++
++    if (sPlayerbotAIConfig.regionalPopulationProtectQuestBots && !ai->GetCurrentIncompleteQuests().empty())
++        return false;
++
++    return true;
++}
++
++bool RandomPlayerbotMgr::IsRealPlayerNear(WorldLocation const& location, float range) const
++{
++    for (Player* player : players)
++    {
++        if (!player || !player->IsInWorld() || player->GetSession()->IsBot() ||
++            player->GetMapId() != location.GetMapId())
++            continue;
++
++        if (location.GetExactDist2d(player) < range)
++            return true;
++    }
++
++    return false;
++}
++
++void RandomPlayerbotMgr::RefreshRegionalNearbyZones(Player* host)
++{
++    regionalNearbyZones.clear();
++    if (!host)
++        return;
++
++    std::map<uint32, float> zoneDistances;
++    Map* map = sMapMgr->FindMap(regionalMapId, 0);
++    if (!map)
++        return;
++
++    for (WorldLocation const& loc : sTravelMgr.GetTeleportLocations(host))
++    {
++        if (loc.GetMapId() != regionalMapId)
++            continue;
++
++        uint32 zoneId = map->GetZoneId(host->GetPhaseMask(), loc.GetPositionX(), loc.GetPositionY(),
++                                      loc.GetPositionZ());
++        if (!zoneId || zoneId == regionalZoneId)
++            continue;
++
++        float distance = loc.GetExactDist2d(host);
++        auto itr = zoneDistances.find(zoneId);
++        if (itr == zoneDistances.end() || distance < itr->second)
++            zoneDistances[zoneId] = distance;
++    }
++
++    std::vector<std::pair<uint32, float>> sorted(zoneDistances.begin(), zoneDistances.end());
++    std::sort(sorted.begin(), sorted.end(),
++              [](auto const& left, auto const& right) { return left.second < right.second; });
++
++    for (auto const& [zoneId, distance] : sorted)
++    {
++        (void)distance;
++        regionalNearbyZones.push_back(zoneId);
++        if (regionalNearbyZones.size() >= sPlayerbotAIConfig.regionalPopulationNearbyZoneCount)
++            break;
++    }
++}
++
++bool RandomPlayerbotMgr::BuildRegionalDestination(Player* bot, RegionalCategory category,
++                                                   WorldLocation& destination, uint32& zoneId, uint32& areaId)
++{
++    Player* host = ObjectAccessor::FindPlayer(regionalHostGuid);
++    if (!host || !IsValidRegionalHostLocation(host))
++        return false;
++
++    Map* map = sMapMgr->FindMap(regionalMapId, 0);
++    if (!map)
++        return false;
++
++    std::vector<WorldLocation> candidates;
++    for (WorldLocation const& loc : sTravelMgr.GetTeleportLocations(bot))
++    {
++        if (loc.GetMapId() != regionalMapId)
++            continue;
++
++        uint32 candidateZone = map->GetZoneId(bot->GetPhaseMask(), loc.GetPositionX(), loc.GetPositionY(),
++                                              loc.GetPositionZ());
++        uint32 candidateArea = map->GetAreaId(bot->GetPhaseMask(), loc.GetPositionX(), loc.GetPositionY(),
++                                              loc.GetPositionZ());
++        if (!candidateZone || !candidateArea)
++            continue;
++
++        bool correctZone = category == RegionalCategory::HostZone
++                               ? candidateZone == regionalZoneId
++                               : std::find(regionalNearbyZones.begin(), regionalNearbyZones.end(), candidateZone) !=
++                                     regionalNearbyZones.end();
++        if (!correctZone)
++            continue;
++
++        auto bracket = sPlayerbotAIConfig.zoneBrackets.find(candidateZone);
++        if (bracket != sPlayerbotAIConfig.zoneBrackets.end())
++        {
++            uint32 minLevel = bracket->second.first > sPlayerbotAIConfig.regionalPopulationZoneLevelLowerMargin
++                                  ? bracket->second.first -
++                                        sPlayerbotAIConfig.regionalPopulationZoneLevelLowerMargin
++                                  : 1;
++            uint32 maxLevel = std::min<uint32>(
++                sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL),
++                bracket->second.second + sPlayerbotAIConfig.regionalPopulationZoneLevelUpperMargin);
++            if (bot->GetLevel() < minLevel || bot->GetLevel() > maxLevel)
++                continue;
++        }
++
++        float hostDistance = loc.GetExactDist2d(host);
++        if (category == RegionalCategory::HostZone &&
++            (hostDistance < sPlayerbotAIConfig.regionalPopulationMinDistanceFromHost ||
++             hostDistance > sPlayerbotAIConfig.regionalPopulationMaxDistanceInHostZone))
++            continue;
++
++        if (IsRealPlayerNear(loc, sPlayerbotAIConfig.regionalPopulationRealPlayerProtectionRadius))
++            continue;
++
++        uint32 zonePopulation = 0;
++        uint32 areaPopulation = 0;
++        uint32 pointPopulation = 0;
++        for (auto const& [guid, onlineBot] : playerBots)
++        {
++            (void)guid;
++            if (!onlineBot || !onlineBot->IsInWorld() || onlineBot->GetMapId() != loc.GetMapId())
++                continue;
++            if (onlineBot->GetZoneId() == candidateZone)
++                ++zonePopulation;
++            if (onlineBot->GetAreaId() == candidateArea)
++                ++areaPopulation;
++            if (loc.GetExactDist2d(onlineBot) <
++                sPlayerbotAIConfig.regionalPopulationMinDistanceBetweenDestinations)
++                ++pointPopulation;
++        }
++
++        for (auto const& [assignedBotId, assignment] : regionalAssignments)
++        {
++            (void)assignedBotId;
++            if (assignment.zoneId == candidateZone)
++                ++zonePopulation;
++            if (assignment.areaId == candidateArea)
++                ++areaPopulation;
++            if (assignment.destination.GetMapId() == loc.GetMapId() &&
++                assignment.destination.GetExactDist2d(loc) <
++                    sPlayerbotAIConfig.regionalPopulationMinDistanceBetweenDestinations)
++                ++pointPopulation;
++        }
++
++        if (zonePopulation >= sPlayerbotAIConfig.regionalPopulationMaxPerZone ||
++            areaPopulation >= sPlayerbotAIConfig.regionalPopulationMaxPerSubArea ||
++            pointPopulation >= sPlayerbotAIConfig.regionalPopulationMaxPerPoint)
++            continue;
++
++        candidates.push_back(loc);
++    }
++
++    if (candidates.empty())
++        return false;
++
++    std::shuffle(candidates.begin(), candidates.end(), RandomEngine::Instance());
++    destination = candidates.front();
++    zoneId = map->GetZoneId(bot->GetPhaseMask(), destination.GetPositionX(), destination.GetPositionY(),
++                            destination.GetPositionZ());
++    areaId = map->GetAreaId(bot->GetPhaseMask(), destination.GetPositionX(), destination.GetPositionY(),
++                            destination.GetPositionZ());
++    return true;
++}
++
++bool RandomPlayerbotMgr::ProcessRegionalAssignment(Player* bot, RegionalAssignment& assignment)
++{
++    if (!bot || !bot->IsInWorld())
++        return false;
++
++    if (bot->GetMapId() == assignment.destination.GetMapId() &&
++        bot->GetZoneId() == assignment.zoneId &&
++        bot->GetExactDist2d(assignment.destination) <= 150.0f)
++        return false;
++
++    if (!IsRegionalBotEligible(bot))
++        return true;
++
++    uint32 now = NowSeconds();
++    if (!assignment.organicStarted && sPlayerbotAIConfig.regionalPopulationOrganicTravel &&
++        bot->GetMapId() == assignment.destination.GetMapId() &&
++        bot->GetExactDist2d(assignment.destination) <=
++            sPlayerbotAIConfig.regionalPopulationMaxWalkingRouteDistance)
++    {
++        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot))
++        {
++            ai->rpgInfo.ChangeToGoGrind(WorldPosition(assignment.destination));
++            assignment.organicStarted = true;
++            assignment.lastAttemptAt = now;
++            LOG_DEBUG("playerbots", "Regional population: {} walking to zone {}", bot->GetName(),
++                      assignment.zoneId);
++            return true;
++        }
++    }
++
++    if (sPlayerbotAIConfig.regionalPopulationAllowSilentFallback &&
++        now >= assignment.assignedAt + sPlayerbotAIConfig.regionalPopulationSilentFallbackAfter &&
++        !IsRealPlayerNear(assignment.destination,
++                          sPlayerbotAIConfig.regionalPopulationRealPlayerProtectionRadius) &&
++        !GET_PLAYERBOT_AI(bot)->HasPlayerNearby(
++            sPlayerbotAIConfig.regionalPopulationRealPlayerProtectionRadius))
++    {
++        bot->GetMotionMaster()->Clear();
++        GET_PLAYERBOT_AI(bot)->Reset(true);
++        bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
++        bot->TeleportTo(assignment.destination);
++        assignment.lastAttemptAt = now;
++        LOG_DEBUG("playerbots", "Regional population: {} silently moved to zone {}", bot->GetName(),
++                  assignment.zoneId);
++    }
++
++    return true;
++}
++
++bool RandomPlayerbotMgr::StartRegionalAssignment(Player* bot, RegionalCategory category)
++{
++    WorldLocation destination;
++    uint32 zoneId = 0;
++    uint32 areaId = 0;
++    if (!BuildRegionalDestination(bot, category, destination, zoneId, areaId))
++        return false;
++
++    RegionalAssignment assignment;
++    assignment.category = category;
++    assignment.destination = destination;
++    assignment.zoneId = zoneId;
++    assignment.areaId = areaId;
++    assignment.assignedAt = NowSeconds();
++    regionalAssignments[bot->GetGUID().GetCounter()] = assignment;
++    regionalBotCooldowns[bot->GetGUID().GetCounter()] =
++        assignment.assignedAt + sPlayerbotAIConfig.regionalPopulationBotReassignmentCooldown;
++    ProcessRegionalAssignment(bot, regionalAssignments[bot->GetGUID().GetCounter()]);
++    return true;
++}
++
++void RandomPlayerbotMgr::UpdateRegionalPopulation()
++{
++    if (!sPlayerbotAIConfig.regionalPopulationEnabled || regionalPaused || regionalHostGuid.IsEmpty())
++        return;
++
++    uint32 now = NowSeconds();
++    if (regionalLastUpdate &&
++        now < regionalLastUpdate + sPlayerbotAIConfig.regionalPopulationUpdateInterval)
++        return;
++    regionalLastUpdate = now;
++
++    Player* host = ObjectAccessor::FindPlayer(regionalHostGuid);
++    if (!host || !host->IsInWorld() || host->GetSession()->GetAccountId() !=
++                                           sPlayerbotAIConfig.regionalPopulationHostAccountId)
++    {
++        ClearRegionalPopulation();
++        return;
++    }
++
++    if (regionalPendingZoneId &&
++        now >= regionalPendingSince + sPlayerbotAIConfig.regionalPopulationZoneStableTime &&
++        now >= regionalLastRegionChange + sPlayerbotAIConfig.regionalPopulationRegionChangeCooldown)
++    {
++        regionalMapId = regionalPendingMapId;
++        regionalZoneId = regionalPendingZoneId;
++        regionalAreaId = regionalPendingAreaId;
++        regionalPendingMapId = 0;
++        regionalPendingZoneId = 0;
++        regionalPendingAreaId = 0;
++        regionalPendingSince = 0;
++        regionalLastRegionChange = now;
++        regionalForceRebalance = true;
++        RefreshRegionalNearbyZones(host);
++        LOG_INFO("playerbots", "Regional population moved to map {} zone {}", regionalMapId, regionalZoneId);
++    }
++
++    for (auto itr = regionalAssignments.begin(); itr != regionalAssignments.end();)
++    {
++        Player* bot = GetPlayerBot(ObjectGuid::Create<HighGuid::Player>(itr->first));
++        if (!bot || !ProcessRegionalAssignment(bot, itr->second))
++            itr = regionalAssignments.erase(itr);
++        else
++            ++itr;
++    }
++
++    if (!regionalForceRebalance && regionalLastRebalance &&
++        now < regionalLastRebalance + sPlayerbotAIConfig.regionalPopulationRebalanceInterval)
++        return;
++
++    regionalLastRebalance = now;
++    regionalForceRebalance = false;
++
++    uint32 onlineBots = playerBots.size();
++    uint32 targetHost = onlineBots * sPlayerbotAIConfig.regionalPopulationHostZonePercent / 100;
++    uint32 targetNearby = onlineBots * sPlayerbotAIConfig.regionalPopulationNearbyZonesPercent / 100;
++    uint32 hostCount = 0;
++    uint32 nearbyCount = 0;
++    uint32 sameFactionCount = 0;
++    TeamId hostTeam = host->GetTeamId();
++    for (auto const& [guid, bot] : playerBots)
++    {
++        (void)guid;
++        if (!bot || !bot->IsInWorld() || bot->GetMapId() != regionalMapId)
++            continue;
++        if (bot->GetZoneId() == regionalZoneId)
++        {
++            ++hostCount;
++            if (bot->GetTeamId() == hostTeam)
++                ++sameFactionCount;
++        }
++        else if (std::find(regionalNearbyZones.begin(), regionalNearbyZones.end(), bot->GetZoneId()) !=
++                 regionalNearbyZones.end())
++        {
++            ++nearbyCount;
++            if (bot->GetTeamId() == hostTeam)
++                ++sameFactionCount;
++        }
++    }
++
++    for (auto const& [botId, assignment] : regionalAssignments)
++    {
++        Player* bot = GetPlayerBot(ObjectGuid::Create<HighGuid::Player>(botId));
++        if (!bot || (bot->GetMapId() == regionalMapId && bot->GetZoneId() == assignment.zoneId))
++            continue;
++        if (assignment.category == RegionalCategory::HostZone)
++            ++hostCount;
++        else
++            ++nearbyCount;
++        if (bot->GetTeamId() == hostTeam)
++            ++sameFactionCount;
+     }
++
++    uint32 starts = 0;
++    uint32 traveling = regionalAssignments.size();
++    std::vector<Player*> candidates;
++    for (auto const& [guid, bot] : playerBots)
++    {
++        uint32 botId = guid.GetCounter();
++        if (!IsRegionalBotEligible(bot) || regionalAssignments.contains(botId) ||
++            (regionalBotCooldowns.contains(botId) && regionalBotCooldowns[botId] > now))
++            continue;
++        candidates.push_back(bot);
++    }
++
++    std::shuffle(candidates.begin(), candidates.end(), RandomEngine::Instance());
++    uint32 regionalTarget = targetHost + targetNearby;
++    uint32 sameFactionTarget =
++        (regionalTarget * sPlayerbotAIConfig.regionalPopulationSameFactionPercent + 99) / 100;
++    bool preferSameFaction = sameFactionCount < sameFactionTarget;
++    std::stable_sort(candidates.begin(), candidates.end(), [hostTeam, preferSameFaction](Player* left, Player* right)
++    {
++        bool leftPreferred = (left->GetTeamId() == hostTeam) == preferSameFaction;
++        bool rightPreferred = (right->GetTeamId() == hostTeam) == preferSameFaction;
++        return leftPreferred > rightPreferred;
++    });
++
++    for (Player* bot : candidates)
++    {
++        if (starts >= sPlayerbotAIConfig.regionalPopulationMaxTravelStartsPerCycle ||
++            traveling >= sPlayerbotAIConfig.regionalPopulationMaxTravelingBots)
++            break;
++
++        RegionalCategory category;
++        if (hostCount < targetHost)
++            category = RegionalCategory::HostZone;
++        else if (nearbyCount < targetNearby)
++            category = RegionalCategory::NearbyZone;
++        else
++            break;
++
++        if (!StartRegionalAssignment(bot, category))
++            continue;
++
++        ++starts;
++        ++traveling;
++        if (category == RegionalCategory::HostZone)
++            ++hostCount;
++        else
++            ++nearbyCount;
++        if (bot->GetTeamId() == hostTeam)
++            ++sameFactionCount;
++    }
++}
++
++std::string RandomPlayerbotMgr::GetRegionalPopulationStatus() const
++{
++    std::ostringstream out;
++    out << "Regional population: "
++        << (!sPlayerbotAIConfig.regionalPopulationEnabled ? "disabled" : regionalPaused ? "paused" : "enabled");
++    if (regionalHostGuid.IsEmpty())
++        return out.str() + ", no host online";
++
++    Player* host = ObjectAccessor::FindPlayer(regionalHostGuid);
++    uint32 hostCount = 0;
++    uint32 nearbyCount = 0;
++    for (auto const& [guid, bot] : playerBots)
++    {
++        (void)guid;
++        if (!bot || !bot->IsInWorld() || bot->GetMapId() != regionalMapId)
++            continue;
++        if (bot->GetZoneId() == regionalZoneId)
++            ++hostCount;
++        else if (std::find(regionalNearbyZones.begin(), regionalNearbyZones.end(), bot->GetZoneId()) !=
++                 regionalNearbyZones.end())
++            ++nearbyCount;
++    }
++
++    uint32 onlineBots = playerBots.size();
++    uint32 targetHost = onlineBots * sPlayerbotAIConfig.regionalPopulationHostZonePercent / 100;
++    uint32 targetNearby = onlineBots * sPlayerbotAIConfig.regionalPopulationNearbyZonesPercent / 100;
++    out << ", host=" << (host ? host->GetName() : "offline")
++        << ", map=" << regionalMapId << ", zone=" << regionalZoneId
++        << ", nearbyZones=" << regionalNearbyZones.size()
++        << ", hostZone=" << hostCount << "/" << targetHost
++        << ", nearby=" << nearbyCount << "/" << targetNearby
++        << ", world=" << (onlineBots - std::min(onlineBots, hostCount + nearbyCount))
++        << ", traveling=" << regionalAssignments.size();
++    return out.str();
++}
++
++bool RandomPlayerbotMgr::HandleRegionalPopulationCommand(ChatHandler* handler, std::string const& args)
++{
++    std::string command = args;
++    std::transform(command.begin(), command.end(), command.begin(),
++                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++
++    if (command.empty() || command == "status")
++    {
++        handler->SendSysMessage(GetRegionalPopulationStatus());
++        return true;
++    }
++    if (command == "pause")
++    {
++        regionalPaused = true;
++        handler->SendSysMessage("Regional population paused.");
++        return true;
++    }
++    if (command == "resume")
++    {
++        regionalPaused = false;
++        regionalForceRebalance = true;
++        handler->SendSysMessage("Regional population resumed.");
++        return true;
++    }
++    if (command == "rebalance")
++    {
++        regionalForceRebalance = true;
++        regionalLastRebalance = 0;
++        handler->SendSysMessage("Regional population rebalance scheduled.");
++        return true;
++    }
++    if (command == "clear")
++    {
++        ClearRegionalPopulation();
++        handler->SendSysMessage("Regional population state cleared.");
++        return true;
++    }
++
++    handler->SendSysMessage("Usage: .playerbots region [status|pause|resume|rebalance|clear]");
++    return false;
+ }
+ 
+ void RandomPlayerbotMgr::OnPlayerLoginError(uint32 bot)
+diff --git a/src/Bot/RandomPlayerbotMgr.h b/src/Bot/RandomPlayerbotMgr.h
+index b68c77e4..e1a5abe8 100644
+--- a/src/Bot/RandomPlayerbotMgr.h
++++ b/src/Bot/RandomPlayerbotMgr.h
+@@ -46,6 +46,7 @@ struct BattlegroundInfo
+ class ChatHandler;
+ class PerfMonitorOperation;
+ class WorldLocation;
++class Player;
+ 
+ struct CachedEvent
+ {
+@@ -116,6 +117,8 @@ public:
+     std::string const HandleRemoteCommand(std::string const request);
+     void OnPlayerLogout(Player* player);
+     void OnPlayerLogin(Player* player);
++    void OnRegionalHostZoneChanged(Player* player, uint32 newZone, uint32 newArea);
++    bool HandleRegionalPopulationCommand(ChatHandler* handler, std::string const& args);
+     void OnPlayerLoginError(uint32 bot);
+     Player* GetRandomPlayer();
+     std::vector<Player*> GetPlayers() { return players; };
+@@ -250,6 +253,53 @@ private:
+     uint32 bgBotsCount;
+     uint32 playersLevel;
+ 
++    enum class RegionalCategory : uint8
++    {
++        HostZone,
++        NearbyZone
++    };
++
++    struct RegionalAssignment
++    {
++        RegionalCategory category = RegionalCategory::HostZone;
++        WorldLocation destination;
++        uint32 zoneId = 0;
++        uint32 areaId = 0;
++        uint32 assignedAt = 0;
++        uint32 lastAttemptAt = 0;
++        bool organicStarted = false;
++    };
++
++    ObjectGuid regionalHostGuid;
++    uint32 regionalMapId = 0;
++    uint32 regionalZoneId = 0;
++    uint32 regionalAreaId = 0;
++    uint32 regionalPendingMapId = 0;
++    uint32 regionalPendingZoneId = 0;
++    uint32 regionalPendingAreaId = 0;
++    uint32 regionalPendingSince = 0;
++    uint32 regionalLastRegionChange = 0;
++    uint32 regionalLastUpdate = 0;
++    uint32 regionalLastRebalance = 0;
++    bool regionalPaused = false;
++    bool regionalForceRebalance = false;
++    std::unordered_map<uint32, RegionalAssignment> regionalAssignments;
++    std::unordered_map<uint32, uint32> regionalBotCooldowns;
++    std::vector<uint32> regionalNearbyZones;
++
++    void UpdateRegionalPopulation();
++    void ClearRegionalPopulation();
++    bool IsRegionalHost(Player* player) const;
++    bool IsValidRegionalHostLocation(Player* player) const;
++    bool IsRegionalBotEligible(Player* bot);
++    bool IsRealPlayerNear(WorldLocation const& location, float range) const;
++    void RefreshRegionalNearbyZones(Player* host);
++    bool BuildRegionalDestination(Player* bot, RegionalCategory category, WorldLocation& destination,
++                                  uint32& zoneId, uint32& areaId);
++    bool StartRegionalAssignment(Player* bot, RegionalCategory category);
++    bool ProcessRegionalAssignment(Player* bot, RegionalAssignment& assignment);
++    std::string GetRegionalPopulationStatus() const;
++
+     // Account lists
+     std::vector<uint32> rndBotTypeAccounts;             // Accounts marked as RNDbot (type 1)
+     std::vector<uint32> addClassTypeAccounts;           // Accounts marked as AddClass (type 2)
+diff --git a/src/PlayerbotAIConfig.cpp b/src/PlayerbotAIConfig.cpp
+index b67c1e7e..4b952f6f 100644
+--- a/src/PlayerbotAIConfig.cpp
++++ b/src/PlayerbotAIConfig.cpp
+@@ -687,6 +687,85 @@ bool PlayerbotAIConfig::Initialize()
+     syncLevelWithPlayers = sConfigMgr->GetOption<bool>("AiPlayerbot.SyncLevelWithPlayers", false);
+     randomBotGroupNearby = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotGroupNearby", false);
+ 
++    regionalPopulationEnabled =
++        sConfigMgr->GetOption<bool>("AiPlayerbot.RegionalPopulation.Enabled", false);
++    regionalPopulationHostAccountId =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.PreferredHostAccountId", 0);
++    regionalPopulationHostZonePercent =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.HostZonePercent", 20);
++    regionalPopulationNearbyZonesPercent =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.NearbyZonesPercent", 30);
++    regionalPopulationRandomWorldPercent =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.RandomWorldPercent", 50);
++    regionalPopulationNearbyZoneCount =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.NearbyZoneCount", 3);
++    regionalPopulationZoneStableTime =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.ZoneStableTime", 90);
++    regionalPopulationRegionChangeCooldown =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.RegionChangeCooldown", 300);
++    regionalPopulationUpdateInterval =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.UpdateInterval", 30);
++    regionalPopulationRebalanceInterval =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.RebalanceInterval", 30);
++    regionalPopulationMaxTravelStartsPerCycle =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.MaxTravelStartsPerCycle", 6);
++    regionalPopulationMaxTravelingBots =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.MaxTravelingBots", 12);
++    regionalPopulationBotReassignmentCooldown =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.BotReassignmentCooldown", 600);
++    regionalPopulationSilentFallbackAfter =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.SilentFallbackAfter", 120);
++    regionalPopulationFailedRouteCooldown =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.FailedRouteCooldown", 600);
++    regionalPopulationHostLevelRangeBelow =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.HostLevelRangeBelow", 8);
++    regionalPopulationHostLevelRangeAbove =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.HostLevelRangeAbove", 8);
++    regionalPopulationZoneLevelLowerMargin =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.ZoneLevelLowerMargin", 1);
++    regionalPopulationZoneLevelUpperMargin =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.ZoneLevelUpperMargin", 3);
++    regionalPopulationMinDistanceFromHost =
++        sConfigMgr->GetOption<float>("AiPlayerbot.RegionalPopulation.MinDistanceFromHost", 250.0f);
++    regionalPopulationMaxDistanceInHostZone =
++        sConfigMgr->GetOption<float>("AiPlayerbot.RegionalPopulation.MaxDistanceInHostZone", 2000.0f);
++    regionalPopulationMaxWalkingRouteDistance =
++        sConfigMgr->GetOption<float>("AiPlayerbot.RegionalPopulation.MaxWalkingRouteDistance", 6000.0f);
++    regionalPopulationRealPlayerProtectionRadius =
++        sConfigMgr->GetOption<float>("AiPlayerbot.RegionalPopulation.RealPlayerProtectionRadius", 250.0f);
++    regionalPopulationMinDistanceBetweenDestinations =
++        sConfigMgr->GetOption<float>("AiPlayerbot.RegionalPopulation.MinDistanceBetweenDestinations", 75.0f);
++    regionalPopulationMaxPerPoint =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.MaxPerPoint", 3);
++    regionalPopulationMaxPerZone =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.MaxPerZone", 20);
++    regionalPopulationMaxPerSubArea =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.MaxPerSubArea", 4);
++    regionalPopulationSameFactionPercent =
++        sConfigMgr->GetOption<uint32>("AiPlayerbot.RegionalPopulation.SameFactionPercent", 80);
++    regionalPopulationOrganicTravel =
++        sConfigMgr->GetOption<bool>("AiPlayerbot.RegionalPopulation.OrganicTravel", true);
++    regionalPopulationAllowSilentFallback =
++        sConfigMgr->GetOption<bool>("AiPlayerbot.RegionalPopulation.AllowSilentFallback", true);
++    regionalPopulationAllowFlightPaths =
++        sConfigMgr->GetOption<bool>("AiPlayerbot.RegionalPopulation.AllowFlightPaths", true);
++    regionalPopulationAllowPortals =
++        sConfigMgr->GetOption<bool>("AiPlayerbot.RegionalPopulation.AllowPortals", true);
++    regionalPopulationAllowBoatsAndZeppelins =
++        sConfigMgr->GetOption<bool>("AiPlayerbot.RegionalPopulation.AllowBoatsAndZeppelins", true);
++    regionalPopulationProtectQuestBots =
++        sConfigMgr->GetOption<bool>("AiPlayerbot.RegionalPopulation.ProtectQuestBots", false);
++
++    uint32 regionalPercentTotal = regionalPopulationHostZonePercent + regionalPopulationNearbyZonesPercent +
++                                  regionalPopulationRandomWorldPercent;
++    if (regionalPercentTotal != 100)
++    {
++        LOG_ERROR("server.loading",
++                  "Regional population percentages total {} instead of 100; disabling the feature.",
++                  regionalPercentTotal);
++        regionalPopulationEnabled = false;
++    }
++
+     // arena
+     randomBotArenaTeam2v2Count = sConfigMgr->GetOption<int32>("AiPlayerbot.RandomBotArenaTeam2v2Count", 10);
+     randomBotArenaTeam3v3Count = sConfigMgr->GetOption<int32>("AiPlayerbot.RandomBotArenaTeam3v3Count", 10);
+diff --git a/src/PlayerbotAIConfig.h b/src/PlayerbotAIConfig.h
+index 2d9071ea..e4eed38e 100644
+--- a/src/PlayerbotAIConfig.h
++++ b/src/PlayerbotAIConfig.h
+@@ -378,6 +378,42 @@ public:
+     int32 enableRandomBotTrading;
+     uint32 tweakValue;  // Debugging config
+ 
++    // Host-driven regional population
++    bool regionalPopulationEnabled;
++    uint32 regionalPopulationHostAccountId;
++    uint32 regionalPopulationHostZonePercent;
++    uint32 regionalPopulationNearbyZonesPercent;
++    uint32 regionalPopulationRandomWorldPercent;
++    uint32 regionalPopulationNearbyZoneCount;
++    uint32 regionalPopulationZoneStableTime;
++    uint32 regionalPopulationRegionChangeCooldown;
++    uint32 regionalPopulationUpdateInterval;
++    uint32 regionalPopulationRebalanceInterval;
++    uint32 regionalPopulationMaxTravelStartsPerCycle;
++    uint32 regionalPopulationMaxTravelingBots;
++    uint32 regionalPopulationBotReassignmentCooldown;
++    uint32 regionalPopulationSilentFallbackAfter;
++    uint32 regionalPopulationFailedRouteCooldown;
++    uint32 regionalPopulationHostLevelRangeBelow;
++    uint32 regionalPopulationHostLevelRangeAbove;
++    uint32 regionalPopulationZoneLevelLowerMargin;
++    uint32 regionalPopulationZoneLevelUpperMargin;
++    float regionalPopulationMinDistanceFromHost;
++    float regionalPopulationMaxDistanceInHostZone;
++    float regionalPopulationMaxWalkingRouteDistance;
++    float regionalPopulationRealPlayerProtectionRadius;
++    float regionalPopulationMinDistanceBetweenDestinations;
++    uint32 regionalPopulationMaxPerPoint;
++    uint32 regionalPopulationMaxPerZone;
++    uint32 regionalPopulationMaxPerSubArea;
++    uint32 regionalPopulationSameFactionPercent;
++    bool regionalPopulationOrganicTravel;
++    bool regionalPopulationAllowSilentFallback;
++    bool regionalPopulationAllowFlightPaths;
++    bool regionalPopulationAllowPortals;
++    bool regionalPopulationAllowBoatsAndZeppelins;
++    bool regionalPopulationProtectQuestBots;
++
+     uint32 randomBotArenaTeamCount;
+     uint32 randomBotArenaTeamMaxRating;
+     uint32 randomBotArenaTeamMinRating;
+diff --git a/src/Script/PlayerbotCommandScript.cpp b/src/Script/PlayerbotCommandScript.cpp
+index a7a07395..0536a94d 100644
+--- a/src/Script/PlayerbotCommandScript.cpp
++++ b/src/Script/PlayerbotCommandScript.cpp
+@@ -14,12 +14,24 @@
+  */
+ 
+ #include "BattleGroundTactics.h"
++#include "AiFactory.h"
++#include "Bag.h"
++#include "BisListMgr.h"
+ #include "Chat.h"
+ #include "GuildTaskMgr.h"
++#include "ObjectMgr.h"
+ #include "PerfMonitor.h"
++#include "Pet.h"
++#include "PlayerbotFactory.h"
+ #include "PlayerbotMgr.h"
+ #include "RandomPlayerbotMgr.h"
++#include "ReputationMgr.h"
+ #include "ScriptMgr.h"
++#include "World.h"
++
++#include <algorithm>
++#include <cctype>
++#include <set>
+ 
+ using namespace Acore::ChatCommands;
+ 
+@@ -46,17 +58,222 @@ public:
+             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
+             {"pmon", HandlePerfMonCommand, SEC_GAMEMASTER, Console::Yes},
+             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
++            {"region", HandleRegionalPopulationCommand, SEC_GAMEMASTER, Console::Yes},
+             {"debug", playerbotsDebugCommandTable},
+             {"account", playerbotsAccountCommandTable},
+         };
+ 
+         static ChatCommandTable commandTable = {
+             {"playerbots", playerbotsCommandTable},
++            {"peak", HandlePeakCommand, SEC_ADMINISTRATOR, Console::No},
+         };
+ 
+         return commandTable;
+     }
+ 
++    static uint8 ParseClass(std::string className)
++    {
++        className.erase(std::remove_if(className.begin(), className.end(),
++                                       [](unsigned char c) { return std::isspace(c); }),
++                        className.end());
++        std::transform(className.begin(), className.end(), className.begin(),
++                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++
++        if (className == "warrior" || className == "guerreiro") return CLASS_WARRIOR;
++        if (className == "paladin" || className == "paladino") return CLASS_PALADIN;
++        if (className == "hunter" || className == "cacador") return CLASS_HUNTER;
++        if (className == "rogue" || className == "ladino") return CLASS_ROGUE;
++        if (className == "priest" || className == "sacerdote") return CLASS_PRIEST;
++        if (className == "deathknight" || className == "death-knight" ||
++            className == "cavaleirodamorte" || className == "cavaleiro-da-morte" || className == "dk")
++            return CLASS_DEATH_KNIGHT;
++        if (className == "shaman" || className == "xama") return CLASS_SHAMAN;
++        if (className == "mage" || className == "mago") return CLASS_MAGE;
++        if (className == "warlock" || className == "bruxo") return CLASS_WARLOCK;
++        if (className == "druid" || className == "druida") return CLASS_DRUID;
++        return CLASS_NONE;
++    }
++
++    static void DestroyPeakGear(Player* player)
++    {
++        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
++        {
++            if (slot == EQUIPMENT_SLOT_TABARD || slot == EQUIPMENT_SLOT_BODY)
++                continue;
++            if (player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
++                player->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
++        }
++
++        auto destroyIfEquippable = [player](uint8 bag, uint8 slot)
++        {
++            Item* item = player->GetItemByPos(bag, slot);
++            if (!item)
++                return;
++
++            ItemTemplate const* itemTemplate = item->GetTemplate();
++            if (itemTemplate &&
++                (itemTemplate->Class == ITEM_CLASS_WEAPON || itemTemplate->Class == ITEM_CLASS_ARMOR))
++                player->DestroyItem(bag, slot, true);
++        };
++
++        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
++            destroyIfEquippable(INVENTORY_SLOT_BAG_0, slot);
++
++        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
++            if (Bag* container = player->GetBagByPos(bag))
++                for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
++                    destroyIfEquippable(bag, slot);
++    }
++
++    static uint32 ApplyPeakGear(Player* player, uint8 specTab)
++    {
++        constexpr uint16 PeakGearLevel = 290;
++        constexpr uint16 FallbackWindow = 100;
++
++        uint8 faction = player->GetTeamId() == TEAM_ALLIANCE ? 1 : 2;
++        uint16 resolvedLevel = 0;
++        std::map<uint8, uint32> bisItems =
++            sBisListMgr->GetBisForNearest(PeakGearLevel, FallbackWindow, player->getClass(), specTab, faction,
++                                          &resolvedLevel);
++
++        DestroyPeakGear(player);
++
++        uint32 gearScoreLimit = PlayerbotFactory::CalcMixedGearScore(PeakGearLevel, ITEM_QUALITY_EPIC);
++        PlayerbotFactory fillFactory(player, player->GetLevel(), ITEM_QUALITY_EPIC, gearScoreLimit);
++        fillFactory.InitEquipment(false, true);
++
++        std::set<uint32> bisEntries;
++        for (auto const& [slot, itemId] : bisItems)
++        {
++            (void)slot;
++            bisEntries.insert(itemId);
++        }
++
++        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
++            if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
++                if (bisEntries.contains(item->GetEntry()))
++                    player->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
++
++        for (auto const& [slot, itemId] : bisItems)
++        {
++            ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(itemId);
++            if (!itemTemplate)
++                continue;
++
++            if (itemTemplate->RequiredReputationFaction && itemTemplate->RequiredReputationRank > 0)
++                if (FactionEntry const* factionEntry =
++                        sFactionStore.LookupEntry(itemTemplate->RequiredReputationFaction))
++                {
++                    ReputationRank requiredRank =
++                        static_cast<ReputationRank>(itemTemplate->RequiredReputationRank);
++                    if (player->GetReputationRank(itemTemplate->RequiredReputationFaction) < requiredRank)
++                    {
++                        int32 standing =
++                            ReputationMgr::ReputationRankToStanding(
++                                static_cast<ReputationRank>(requiredRank - 1)) + 1;
++                        player->GetReputationMgr().SetReputation(factionEntry, standing);
++                    }
++                }
++
++            if (player->CanUseItem(itemTemplate) != EQUIP_ERR_OK)
++                continue;
++
++            if (player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
++                player->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
++
++            uint16 destination = 0;
++            InventoryResult result = player->CanEquipNewItem(slot, destination, itemId, false);
++            if (result != EQUIP_ERR_OK)
++            {
++                uint8 pairedSlot = 0xFF;
++                if (slot == EQUIPMENT_SLOT_FINGER1) pairedSlot = EQUIPMENT_SLOT_FINGER2;
++                else if (slot == EQUIPMENT_SLOT_FINGER2) pairedSlot = EQUIPMENT_SLOT_FINGER1;
++                else if (slot == EQUIPMENT_SLOT_TRINKET1) pairedSlot = EQUIPMENT_SLOT_TRINKET2;
++                else if (slot == EQUIPMENT_SLOT_TRINKET2) pairedSlot = EQUIPMENT_SLOT_TRINKET1;
++
++                if (pairedSlot != 0xFF)
++                {
++                    if (player->GetItemByPos(INVENTORY_SLOT_BAG_0, pairedSlot))
++                        player->DestroyItem(INVENTORY_SLOT_BAG_0, pairedSlot, true);
++                    result = player->CanEquipNewItem(slot, destination, itemId, false);
++                }
++            }
++
++            if (result == EQUIP_ERR_OK)
++            {
++                player->EquipNewItem(destination, itemId, true);
++                player->AutoUnequipOffhandIfNeed();
++            }
++        }
++
++        PlayerbotFactory finishingFactory(player, player->GetLevel(), ITEM_QUALITY_EPIC, 0);
++        finishingFactory.InitAmmo();
++        finishingFactory.ApplyEnchantAndGemsNew();
++        player->DurabilityRepairAll(false, 1.0f, false);
++        return resolvedLevel;
++    }
++
++    static bool HandlePeakCommand(ChatHandler* handler, char const* args)
++    {
++        Player* player = handler->GetPlayer();
++        uint8 requestedClass = ParseClass(args ? args : "");
++        if (requestedClass == CLASS_NONE)
++        {
++            handler->SendErrorMessage(
++                "Uso: .peak <classe>. Classes: guerreiro, paladino, cacador, ladino, sacerdote, "
++                "cavaleiro-da-morte, xama, mago, bruxo, druida.");
++            return false;
++        }
++
++        if (requestedClass != player->getClass())
++        {
++            handler->SendErrorMessage(
++                "A classe informada nao corresponde a classe real do personagem. O comando nao altera classes.");
++            return false;
++        }
++
++        uint8 specTab = AiFactory::GetPlayerSpecTab(player);
++        uint8 maxLevel = static_cast<uint8>(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL));
++        if (player->GetLevel() != maxLevel)
++        {
++            player->GiveLevel(maxLevel);
++            player->SetUInt32Value(PLAYER_XP, 0);
++        }
++
++        handler->ParseCommands(".learn all default");
++        handler->ParseCommands(".learn all my class");
++        handler->ParseCommands(".learn all crafts");
++        handler->ParseCommands(".learn all lang");
++
++        for (uint32 spellId : {33388u, 33391u, 34090u, 34091u, 54197u})
++            player->learnSpell(spellId);
++
++        player->UpdateSkillsToMaxSkillsForLevel();
++        player->SetFreeTalentPoints(0);
++        player->SendTalentsInfoData(false);
++        player->SetMoney(MAX_MONEY_AMOUNT);
++
++        if (Pet* pet = player->GetPet())
++        {
++            pet->SetLevel(maxLevel);
++            pet->InitTalentForLevel();
++        }
++
++        uint32 resolvedGearLevel = ApplyPeakGear(player, specTab);
++        player->UpdateAllStats();
++        player->SetFullHealth();
++        player->SetPower(POWER_MANA, player->GetMaxPower(POWER_MANA));
++        player->SetPower(POWER_ENERGY, player->GetMaxPower(POWER_ENERGY));
++        player->SaveToDB(false, false);
++
++        handler->PSendSysMessage(
++            "Peak concluido: nivel %u, classe validada, magias, talentos, profissoes, receitas, idiomas e "
++            "habilidades maximizados; equipamento BiS %u aplicado e dinheiro definido no limite de "
++            "214748 ouro, 36 prata e 46 cobre. Itens equipaveis anteriores foram destruidos.",
++            maxLevel, resolvedGearLevel);
++        return true;
++    }
++
+     static bool HandlePlayerbotCommand(ChatHandler* handler, char const* args)
+     {
+         return PlayerbotMgr::HandlePlayerbotMgrCommand(handler, args);
+@@ -67,6 +284,11 @@ public:
+         return RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(handler, args);
+     }
+ 
++    static bool HandleRegionalPopulationCommand(ChatHandler* handler, char const* args)
++    {
++        return sRandomPlayerbotMgr.HandleRegionalPopulationCommand(handler, args ? args : "");
++    }
++
+     static bool HandleGuildTaskCommand(ChatHandler* handler, char const* args)
+     {
+         return GuildTaskMgr::HandleConsoleCommand(handler, args);
+diff --git a/src/Script/Playerbots.cpp b/src/Script/Playerbots.cpp
+index e9abd5b7..34468613 100644
+--- a/src/Script/Playerbots.cpp
++++ b/src/Script/Playerbots.cpp
+@@ -89,7 +89,8 @@ public:
+         PLAYERHOOK_CAN_PLAYER_USE_GUILD_CHAT,
+         PLAYERHOOK_CAN_PLAYER_USE_CHANNEL_CHAT,
+         PLAYERHOOK_ON_GIVE_EXP,
+-        PLAYERHOOK_ON_BEFORE_TELEPORT
++        PLAYERHOOK_ON_BEFORE_TELEPORT,
++        PLAYERHOOK_ON_UPDATE_ZONE
+     }) {}
+ 
+     void OnPlayerLogin(Player* player) override
+@@ -120,6 +121,12 @@ public:
+         }
+     }
+ 
++    void OnPlayerUpdateZone(Player* player, uint32 newZone, uint32 newArea) override
++    {
++        if (player && !player->GetSession()->IsBot())
++            sRandomPlayerbotMgr.OnRegionalHostZoneChanged(player, newZone, newArea);
++    }
++
+     bool OnPlayerBeforeTeleport(Player* /*player*/, uint32 /*mapid*/, float /*x*/, float /*y*/, float /*z*/,
+                                 float /*orientation*/, uint32 /*options*/, Unit* /*target*/) override
+     {

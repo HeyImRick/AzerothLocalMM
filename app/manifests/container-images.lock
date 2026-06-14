@@ -1,0 +1,12 @@
+# Container image inputs selected on 2026-06-11 for linux/amd64.
+
+MYSQL_IMAGE="mysql@sha256:14690274f4967ba207939c97dd79a8d6604f1d532218ea6be69c0001ddd2d45f"
+MYSQL_VERSION="8.4.9"
+
+UBUNTU_BUILD_BASE="ubuntu:24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11"
+
+# Local images produced from the locked source checkout.
+WORLDSERVER_IMAGE="azeroth-local/worldserver:82d3bf237d51"
+AUTHSERVER_IMAGE="azeroth-local/authserver:82d3bf237d51"
+DB_IMPORT_IMAGE="azeroth-local/db-import:82d3bf237d51"
+CLIENT_DATA_IMAGE="azeroth-local/client-data:82d3bf237d51"

@@ -1,0 +1,38 @@
+# Generated and local-only state
+/source/
+/runtime/
+/var/
+/data/
+/client/
+/backups/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Logs, databases and build products
+*.log
+*.sql.gz
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.iso
+*.exe
+*.dll
+
+# Machine-specific project notes
+/app/desktop/
+/app/manifests/codex-continuity.md
+/app/manifests/installer-audit.md
+/docs/relatorios/
+/docs/projeto-mvp-azeroth-local.md
+
+# Editor and OS files
+.idea/
+.vscode/
+*~
+.DS_Store
