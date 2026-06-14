@@ -45,9 +45,12 @@ if [ ! -s "$ENV_FILE" ]; then
     db_password=$(openssl rand -hex 32)
     printf '%s\n' \
         "DOCKER_DB_ROOT_PASSWORD=$db_password" \
+        "AZEROTH_LOCAL_ROOT=$PROJECT_ROOT" \
         "MIN_RANDOM_BOTS=100" \
         "MAX_RANDOM_BOTS=100" \
         "BUILD_JOBS=4" >"$ENV_FILE"
+elif ! grep -q '^AZEROTH_LOCAL_ROOT=' "$ENV_FILE"; then
+    printf 'AZEROTH_LOCAL_ROOT=%s\n' "$PROJECT_ROOT" >>"$ENV_FILE"
 fi
 chmod 0600 "$ENV_FILE"
 

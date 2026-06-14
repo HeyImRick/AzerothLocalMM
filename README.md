@@ -25,8 +25,16 @@ caches e binarios compilados nao fazem parte do repositorio.
 
 ## Instalacao
 
+O guia detalhado, incluindo preparacao do Docker, autenticacao no repositorio
+privado, cliente, conta, operacao e solucao de problemas, esta em:
+
+**[docs/INSTALACAO-COMPLETA.md](docs/INSTALACAO-COMPLETA.md)**
+
+Resumo para quem ja preparou Fedora/Nobara, Docker e acesso ao GitHub:
+
 ```bash
-git clone https://github.com/HeyImRick/AzerothLocalMM.git
+gh auth login --hostname github.com --git-protocol https --web
+gh repo clone HeyImRick/AzerothLocalMM
 cd AzerothLocalMM
 chmod +x app/scripts/*.sh
 ./app/scripts/install-azeroth-local.sh
@@ -43,6 +51,23 @@ set realmlist 127.0.0.1
 ```
 
 O repositorio nao distribui o cliente nem arquivos proprietarios da Blizzard.
+
+## Uso diario
+
+Iniciar o servidor:
+
+```bash
+cd source/azerothcore
+docker compose --project-name azeroth-local up -d
+```
+
+Parar sem apagar personagens ou bancos:
+
+```bash
+docker compose --project-name azeroth-local down
+```
+
+Nunca use `docker compose down -v`, pois isso pode remover o volume do banco.
 
 ## Build incremental
 
