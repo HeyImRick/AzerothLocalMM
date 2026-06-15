@@ -279,10 +279,13 @@ Classes aceitas: `guerreiro`, `paladino`, `cacador`, `ladino`, `sacerdote`,
 tambem sao aceitos.
 
 O comando exige que a classe informada corresponda a classe real do personagem.
-Ele eleva ao nivel maximo, aprende magias, talentos, profissoes, receitas e
-idiomas, maximiza habilidades e aplica o melhor perfil BiS disponivel para a
-especializacao detectada. Tambem define o dinheiro no limite suportado pelo
-servidor: `214748 ouro, 36 prata e 46 cobre`.
+Ele eleva ao nivel maximo, aprende as magias de classe e idiomas, remove talentos
+escolhidos e libera todos os pontos normais para distribuicao manual. O limite de
+profissoes primarias do personagem passa a 11, sem aprender profissoes, elevar
+niveis ou conceder receitas. Tambem fornece uma montaria terrestre, uma voadora,
+maximiza apenas habilidades que nao sejam profissoes e aplica o melhor perfil BiS
+disponivel para a especializacao detectada. O dinheiro e definido no limite
+suportado pelo servidor: `214748 ouro, 36 prata e 46 cobre`.
 
 Atencao: `.peak` destroi os itens equipados e todos os itens equipaveis presentes
 nas bolsas antes de gerar o novo conjunto.

@@ -882,10 +882,10 @@ index 2d9071ea..e4eed38e 100644
      uint32 randomBotArenaTeamMaxRating;
      uint32 randomBotArenaTeamMinRating;
 diff --git a/src/Script/PlayerbotCommandScript.cpp b/src/Script/PlayerbotCommandScript.cpp
-index a7a07395..0536a94d 100644
+index a7a07395..f7d206b1 100644
 --- a/src/Script/PlayerbotCommandScript.cpp
 +++ b/src/Script/PlayerbotCommandScript.cpp
-@@ -14,12 +14,24 @@
+@@ -14,12 +14,25 @@
   */
  
  #include "BattleGroundTactics.h"
@@ -905,12 +905,13 @@ index a7a07395..0536a94d 100644
 +#include "World.h"
 +
 +#include <algorithm>
++#include <array>
 +#include <cctype>
 +#include <set>
  
  using namespace Acore::ChatCommands;
  
-@@ -46,17 +58,222 @@ public:
+@@ -46,17 +59,313 @@ public:
              {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
              {"pmon", HandlePerfMonCommand, SEC_GAMEMASTER, Console::Yes},
              {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
@@ -981,6 +982,115 @@ index a7a07395..0536a94d 100644
 +                    destroyIfEquippable(bag, slot);
 +    }
 +
++    static void MaximizeNonProfessionSkills(Player* player)
++    {
++        for (uint32 skillId = 1; skillId < sSkillLineStore.GetNumRows(); ++skillId)
++        {
++            SkillLineEntry const* skill = sSkillLineStore.LookupEntry(skillId);
++            if (!skill || !player->HasSkill(skillId) ||
++                skill->categoryId == SKILL_CATEGORY_PROFESSION ||
++                skill->categoryId == SKILL_CATEGORY_SECONDARY)
++                continue;
++
++            uint16 maxValue = player->GetPureMaxSkillValue(skillId);
++            player->SetSkill(skillId, player->GetSkillStep(skillId), maxValue, maxValue);
++        }
++    }
++
++    static void UnlockAllPrimaryProfessions(Player* player)
++    {
++        constexpr std::array<uint32, 11> PrimaryProfessionSkills = {
++            SKILL_ALCHEMY,       SKILL_BLACKSMITHING, SKILL_ENCHANTING,    SKILL_ENGINEERING,
++            SKILL_HERBALISM,     SKILL_INSCRIPTION,   SKILL_JEWELCRAFTING, SKILL_LEATHERWORKING,
++            SKILL_MINING,        SKILL_SKINNING,      SKILL_TAILORING,
++        };
++
++        uint16 knownProfessions = static_cast<uint16>(std::count_if(
++            PrimaryProfessionSkills.begin(), PrimaryProfessionSkills.end(),
++            [player](uint32 skillId) { return player->HasSkill(skillId); }));
++        player->SetFreePrimaryProfessions(
++            static_cast<uint16>(PrimaryProfessionSkills.size() - knownProfessions));
++    }
++
++    static bool EquipPeakItem(Player* player, uint8 slot, uint32 itemId)
++    {
++        ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(itemId);
++        if (!itemTemplate)
++            return false;
++
++        if (itemTemplate->RequiredReputationFaction && itemTemplate->RequiredReputationRank > 0)
++            if (FactionEntry const* factionEntry =
++                    sFactionStore.LookupEntry(itemTemplate->RequiredReputationFaction))
++            {
++                ReputationRank requiredRank =
++                    static_cast<ReputationRank>(itemTemplate->RequiredReputationRank);
++                if (player->GetReputationRank(itemTemplate->RequiredReputationFaction) < requiredRank)
++                {
++                    int32 standing =
++                        ReputationMgr::ReputationRankToStanding(
++                            static_cast<ReputationRank>(requiredRank - 1)) + 1;
++                    player->GetReputationMgr().SetReputation(factionEntry, standing);
++                }
++            }
++
++        if (player->CanUseItem(itemTemplate) != EQUIP_ERR_OK)
++            return false;
++
++        uint32 previousItemId = 0;
++        if (Item* previousItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
++            previousItemId = previousItem->GetEntry();
++
++        uint32 previousOffhandId = 0;
++        bool clearOffhand = slot == EQUIPMENT_SLOT_MAINHAND &&
++                            itemTemplate->InventoryType == INVTYPE_2HWEAPON;
++        if (clearOffhand)
++            if (Item* offhand = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
++            {
++                previousOffhandId = offhand->GetEntry();
++                player->DestroyItem(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND, true);
++            }
++
++        if (player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
++            player->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
++
++        uint16 destination = 0;
++        InventoryResult result = player->CanEquipNewItem(slot, destination, itemId, false);
++        if (result != EQUIP_ERR_OK && slot == EQUIPMENT_SLOT_MAINHAND && !clearOffhand)
++        {
++            if (Item* offhand = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
++            {
++                previousOffhandId = offhand->GetEntry();
++                player->DestroyItem(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND, true);
++            }
++            result = player->CanEquipNewItem(slot, destination, itemId, false);
++        }
++
++        if (result == EQUIP_ERR_OK)
++        {
++            player->EquipNewItem(destination, itemId, true);
++            player->AutoUnequipOffhandIfNeed();
++            return true;
++        }
++
++        if (previousItemId)
++        {
++            uint16 fallbackDestination = 0;
++            if (player->CanEquipNewItem(slot, fallbackDestination, previousItemId, false) == EQUIP_ERR_OK)
++                player->EquipNewItem(fallbackDestination, previousItemId, true);
++        }
++
++        if (previousOffhandId &&
++            !player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
++        {
++            uint16 fallbackDestination = 0;
++            if (player->CanEquipNewItem(
++                    EQUIPMENT_SLOT_OFFHAND, fallbackDestination, previousOffhandId, false) == EQUIP_ERR_OK)
++                player->EquipNewItem(fallbackDestination, previousOffhandId, true);
++        }
++
++        return false;
++    }
++
 +    static uint32 ApplyPeakGear(Player* player, uint8 specTab)
 +    {
 +        constexpr uint16 PeakGearLevel = 290;
@@ -1010,55 +1120,34 @@ index a7a07395..0536a94d 100644
 +                if (bisEntries.contains(item->GetEntry()))
 +                    player->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
 +
++        constexpr std::array<uint8, 3> WeaponSlots = {
++            EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED};
++        for (uint8 slot : WeaponSlots)
++        {
++            auto item = bisItems.find(slot);
++            if (item == bisItems.end())
++                continue;
++
++            uint32 itemId = item->second;
++            EquipPeakItem(player, slot, itemId);
++        }
++
 +        for (auto const& [slot, itemId] : bisItems)
 +        {
-+            ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(itemId);
-+            if (!itemTemplate)
++            if (std::find(WeaponSlots.begin(), WeaponSlots.end(), slot) != WeaponSlots.end())
 +                continue;
 +
-+            if (itemTemplate->RequiredReputationFaction && itemTemplate->RequiredReputationRank > 0)
-+                if (FactionEntry const* factionEntry =
-+                        sFactionStore.LookupEntry(itemTemplate->RequiredReputationFaction))
-+                {
-+                    ReputationRank requiredRank =
-+                        static_cast<ReputationRank>(itemTemplate->RequiredReputationRank);
-+                    if (player->GetReputationRank(itemTemplate->RequiredReputationFaction) < requiredRank)
-+                    {
-+                        int32 standing =
-+                            ReputationMgr::ReputationRankToStanding(
-+                                static_cast<ReputationRank>(requiredRank - 1)) + 1;
-+                        player->GetReputationMgr().SetReputation(factionEntry, standing);
-+                    }
-+                }
++            uint8 pairedSlot = 0xFF;
++            if (slot == EQUIPMENT_SLOT_FINGER1) pairedSlot = EQUIPMENT_SLOT_FINGER2;
++            else if (slot == EQUIPMENT_SLOT_FINGER2) pairedSlot = EQUIPMENT_SLOT_FINGER1;
++            else if (slot == EQUIPMENT_SLOT_TRINKET1) pairedSlot = EQUIPMENT_SLOT_TRINKET2;
++            else if (slot == EQUIPMENT_SLOT_TRINKET2) pairedSlot = EQUIPMENT_SLOT_TRINKET1;
 +
-+            if (player->CanUseItem(itemTemplate) != EQUIP_ERR_OK)
-+                continue;
-+
-+            if (player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-+                player->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
-+
-+            uint16 destination = 0;
-+            InventoryResult result = player->CanEquipNewItem(slot, destination, itemId, false);
-+            if (result != EQUIP_ERR_OK)
++            if (!EquipPeakItem(player, slot, itemId) && pairedSlot != 0xFF)
 +            {
-+                uint8 pairedSlot = 0xFF;
-+                if (slot == EQUIPMENT_SLOT_FINGER1) pairedSlot = EQUIPMENT_SLOT_FINGER2;
-+                else if (slot == EQUIPMENT_SLOT_FINGER2) pairedSlot = EQUIPMENT_SLOT_FINGER1;
-+                else if (slot == EQUIPMENT_SLOT_TRINKET1) pairedSlot = EQUIPMENT_SLOT_TRINKET2;
-+                else if (slot == EQUIPMENT_SLOT_TRINKET2) pairedSlot = EQUIPMENT_SLOT_TRINKET1;
-+
-+                if (pairedSlot != 0xFF)
-+                {
-+                    if (player->GetItemByPos(INVENTORY_SLOT_BAG_0, pairedSlot))
-+                        player->DestroyItem(INVENTORY_SLOT_BAG_0, pairedSlot, true);
-+                    result = player->CanEquipNewItem(slot, destination, itemId, false);
-+                }
-+            }
-+
-+            if (result == EQUIP_ERR_OK)
-+            {
-+                player->EquipNewItem(destination, itemId, true);
-+                player->AutoUnequipOffhandIfNeed();
++                if (player->GetItemByPos(INVENTORY_SLOT_BAG_0, pairedSlot))
++                    player->DestroyItem(INVENTORY_SLOT_BAG_0, pairedSlot, true);
++                EquipPeakItem(player, slot, itemId);
 +            }
 +        }
 +
@@ -1097,16 +1186,18 @@ index a7a07395..0536a94d 100644
 +        }
 +
 +        handler->ParseCommands(".learn all default");
-+        handler->ParseCommands(".learn all my class");
-+        handler->ParseCommands(".learn all crafts");
++        handler->ParseCommands(".learn all my trainer");
++        handler->ParseCommands(".learn all my quest");
 +        handler->ParseCommands(".learn all lang");
 +
-+        for (uint32 spellId : {33388u, 33391u, 34090u, 34091u, 54197u})
++        uint32 groundMountSpell = player->GetTeamId() == TEAM_ALLIANCE ? 60867u : 60866u;
++        for (uint32 spellId : {33388u, 33391u, 34090u, 34091u, 54197u, groundMountSpell, 60025u})
 +            player->learnSpell(spellId);
 +
-+        player->UpdateSkillsToMaxSkillsForLevel();
-+        player->SetFreeTalentPoints(0);
-+        player->SendTalentsInfoData(false);
++        MaximizeNonProfessionSkills(player);
++        UnlockAllPrimaryProfessions(player);
++        player->resetTalents(true);
++        player->InitTalentForLevel();
 +        player->SetMoney(MAX_MONEY_AMOUNT);
 +
 +        if (Pet* pet = player->GetPet())
@@ -1123,9 +1214,10 @@ index a7a07395..0536a94d 100644
 +        player->SaveToDB(false, false);
 +
 +        handler->PSendSysMessage(
-+            "Peak concluido: nivel %u, classe validada, magias, talentos, profissoes, receitas, idiomas e "
-+            "habilidades maximizados; equipamento BiS %u aplicado e dinheiro definido no limite de "
-+            "214748 ouro, 36 prata e 46 cobre. Itens equipaveis anteriores foram destruidos.",
++            "Peak concluido: nivel %u, magias de classe e idiomas aprendidos, pontos de talento liberados, "
++            "11 profissoes primarias desbloqueadas sem niveis ou receitas, montarias terrestre e voadora "
++            "concedidas; equipamento BiS %u aplicado e dinheiro definido no limite de 214748 ouro, 36 prata "
++            "e 46 cobre. Itens equipaveis anteriores foram destruidos.",
 +            maxLevel, resolvedGearLevel);
 +        return true;
 +    }
@@ -1133,7 +1225,7 @@ index a7a07395..0536a94d 100644
      static bool HandlePlayerbotCommand(ChatHandler* handler, char const* args)
      {
          return PlayerbotMgr::HandlePlayerbotMgrCommand(handler, args);
-@@ -67,6 +284,11 @@ public:
+@@ -67,6 +376,11 @@ public:
          return RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(handler, args);
      }
  
