@@ -24,6 +24,7 @@ source "$LOCK_FILE"
 
 test "$(git -C "$SERVER_DIR" rev-parse HEAD)" = "$CORE_COMMIT"
 test "$(git -C "$SERVER_DIR/modules/mod-playerbots" rev-parse HEAD)" = "$PLAYERBOTS_COMMIT"
+test "$(git -C "$SERVER_DIR/modules/mod-transmog" rev-parse HEAD)" = "$TRANSMOG_COMMIT"
 cmp -s "$OVERRIDE_TEMPLATE" "$SERVER_DIR/docker-compose.override.yml"
 git -C "$SERVER_DIR" apply --reverse --check "$CORE_PATCH"
 git -C "$SERVER_DIR/modules/mod-playerbots" apply --reverse --check "$PLAYERBOTS_PATCH"

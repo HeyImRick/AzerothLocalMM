@@ -122,6 +122,9 @@ source "$SOURCE_LOCK_FILE"
 : "${PLAYERBOTS_REPOSITORY:?Missing PLAYERBOTS_REPOSITORY}"
 : "${PLAYERBOTS_BRANCH:?Missing PLAYERBOTS_BRANCH}"
 : "${PLAYERBOTS_COMMIT:?Missing PLAYERBOTS_COMMIT}"
+: "${TRANSMOG_REPOSITORY:?Missing TRANSMOG_REPOSITORY}"
+: "${TRANSMOG_BRANCH:?Missing TRANSMOG_BRANCH}"
+: "${TRANSMOG_COMMIT:?Missing TRANSMOG_COMMIT}"
 
 export COMPOSE_PROJECT_NAME
 
@@ -341,6 +344,26 @@ install_server() {
         print_error "Playerbots checkout does not match the locked commit."
         exit 1
     fi
+
+    if [ -d "$MODULES_DIR/mod-transmog/.git" ]; then
+        print_success "Existing mod-transmog checkout found; it will be preserved."
+    elif [ -e "$MODULES_DIR/mod-transmog" ]; then
+        print_error "Module path exists but is not a Git checkout:"
+        print_info "$MODULES_DIR/mod-transmog"
+        exit 1
+    else
+        print_info "Cloning immutable Transmog commit: $TRANSMOG_COMMIT"
+        git clone \
+            --branch="$TRANSMOG_BRANCH" \
+            "$TRANSMOG_REPOSITORY" \
+            "$MODULES_DIR/mod-transmog"
+        git -C "$MODULES_DIR/mod-transmog" checkout --detach "$TRANSMOG_COMMIT"
+    fi
+    if [ "$(git -C "$MODULES_DIR/mod-transmog" rev-parse HEAD)" != "$TRANSMOG_COMMIT" ]; then
+        print_error "Transmog checkout does not match the locked commit."
+        exit 1
+    fi
+
     apply_source_patches
 
     if [ ! -f "$COMPOSE_OVERRIDE_TEMPLATE" ]; then

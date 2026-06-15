@@ -6,7 +6,7 @@ mod-playerbots, com 100 bots, populacao regional e compilacao incremental.
 ## O que este repositorio fornece
 
 - instalador para Linux da familia Fedora/Nobara;
-- AzerothCore e mod-playerbots fixados em revisoes conhecidas;
+- AzerothCore, mod-playerbots e mod-transmog fixados em revisoes conhecidas;
 - patches das alteracoes locais;
 - Docker Compose com banco, authserver e worldserver;
 - build incremental persistente com CMake, Ninja e ccache;
@@ -87,6 +87,7 @@ Mais detalhes: [docs/BUILD-INCREMENTAL.md](docs/BUILD-INCREMENTAL.md).
 
 - [AzerothCore Playerbots fork](https://github.com/mod-playerbots/azerothcore-wotlk)
 - [mod-playerbots](https://github.com/mod-playerbots/mod-playerbots)
+- [mod-transmog](https://github.com/azerothcore/mod-transmog)
 - instalador adaptado de [Dad's MMO Lab](https://github.com/DadsMmoLab/dads-mmo-lab)
 
 Cada componente upstream permanece sujeito a sua propria licenca.

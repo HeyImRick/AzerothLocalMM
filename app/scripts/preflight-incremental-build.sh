@@ -11,6 +11,7 @@ readonly DIST_DIR="$PROJECT_ROOT/var/dist"
 
 test -d "$SERVER_DIR/.git"
 test -d "$SERVER_DIR/modules/mod-playerbots"
+test -d "$SERVER_DIR/modules/mod-transmog"
 test -f "$SERVER_DIR/docker-compose.override.yml"
 test -f "$SERVER_DIR/apps/docker/Dockerfile.dev-server"
 
