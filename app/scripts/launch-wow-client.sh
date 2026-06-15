@@ -3,7 +3,7 @@ set -euo pipefail
 
 readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly PROJECT_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
-readonly CLIENT_DIR="${WOW_CLIENT_DIR:-$PROJECT_ROOT/client/WoW-3.3.5a}"
+readonly CLIENT_DIR="${WOW_CLIENT_DIR:-$PROJECT_ROOT/client/TheraWoW wotlk}"
 readonly CLIENT_EXE="$CLIENT_DIR/Wow.exe"
 readonly WINE_BIN="${WINE_BIN:-$(command -v wine || true)}"
 readonly WINE_PREFIX="$PROJECT_ROOT/runtime/wine-prefix"
