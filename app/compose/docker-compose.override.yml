@@ -23,7 +23,7 @@ services:
         UBUNTU_VERSION: "24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11"
         BUILD_JOBS: "${BUILD_JOBS:-4}"
     ports: !override
-      - "127.0.0.1:8085:8085"
+      - "100.73.5.110:8085:8085"
     volumes:
       - ./modules:/azerothcore/modules
       - "${AZEROTH_LOCAL_ROOT:?Set AZEROTH_LOCAL_ROOT in .env}/var/dist/bin:/azerothcore/incremental-bin:ro"
@@ -60,7 +60,7 @@ services:
         UBUNTU_VERSION: "24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11"
         BUILD_JOBS: "${BUILD_JOBS:-4}"
     ports: !override
-      - "127.0.0.1:3724:3724"
+      - "100.73.5.110:3724:3724"
     security_opt:
       - no-new-privileges:true
     logging:
